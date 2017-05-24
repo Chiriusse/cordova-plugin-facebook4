@@ -32,6 +32,7 @@ import com.facebook.share.widget.GameRequestDialog;
 import com.facebook.share.widget.MessageDialog;
 import com.facebook.share.widget.ShareDialog;
 import com.facebook.share.widget.AppInviteDialog;
+import com.facebook.HttpMethod;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -51,6 +52,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+
 
 public class ConnectPlugin extends CordovaPlugin {
 
@@ -324,10 +326,14 @@ public class ConnectPlugin extends CordovaPlugin {
             executeDialog(args, callbackContext);
             return true;
 
+        } else if (action.equals("sendTo")) {
+            executeGraphGroup(args, callbackContext);
+            return true;
+
         } else if (action.equals("graphApi")) {
             executeGraph(args, callbackContext);
-
             return true;
+
         } else if (action.equals("appInvite")) {
             executeAppInvite(args, callbackContext);
 
@@ -552,10 +558,10 @@ public class ConnectPlugin extends CordovaPlugin {
             shareDialog.show(content.build());
 
         } else if (method.equalsIgnoreCase("send")) {
-            if (!MessageDialog.canShow(ShareLinkContent.class)) {
+            /*if (!MessageDialog.canShow(ShareLinkContent.class)) {
                 callbackContext.error("Cannot show dialog");
                 return;
-            }
+            }*/
             showDialogContext = callbackContext;
             PluginResult pr = new PluginResult(PluginResult.Status.NO_RESULT);
             pr.setKeepCallback(true);
@@ -577,6 +583,139 @@ public class ConnectPlugin extends CordovaPlugin {
             callbackContext.error("Unsupported dialog method.");
         }
     }
+
+    private void executeGraphGroup(JSONArray args, CallbackContext callbackContext) throws JSONException {
+        Map<String, String> params = new HashMap<String, String>();
+        String method = null;
+        JSONObject parameters;
+
+        try {
+            parameters = args.getJSONObject(0);
+        } catch (JSONException e) {
+            parameters = new JSONObject();
+        }
+
+        Iterator<String> iter = parameters.keys();
+        while (iter.hasNext()) {
+            String key = iter.next();
+            try {
+                params.put(key, parameters.getString(key));
+            } catch (JSONException e) {
+                // Need to handle JSON parameters
+                Log.w(TAG, "Non-string parameter provided to dialog discarded");
+            }
+        }
+        
+        graphContext = callbackContext;
+        PluginResult pr = new PluginResult(PluginResult.Status.NO_RESULT);
+        pr.setKeepCallback(true);
+        graphContext.sendPluginResult(pr);
+
+        graphPath = args.getString(0);
+        JSONArray arr = args.getJSONArray(1);
+
+        final Set<String> permissions = new HashSet<String>(arr.length());
+        for (int i = 0; i < arr.length(); i++) {
+            permissions.add(arr.getString(i));
+        }
+
+        if (permissions.size() == 0) {
+            sendTo(params);
+            return;
+        }
+
+        boolean publishPermissions = false;
+        boolean readPermissions = false;
+        String declinedPermission = null;
+
+        AccessToken accessToken = AccessToken.getCurrentAccessToken();
+        if (accessToken.getPermissions().containsAll(permissions)) {
+            sendTo(params);
+            return;
+        }
+
+        Set<String> declined = accessToken.getDeclinedPermissions();
+
+        // Figure out if we have all permissions
+        for (String permission : permissions) {
+            if (declined.contains(permission)) {
+                declinedPermission = permission;
+                break;
+            }
+
+            if (isPublishPermission(permission)) {
+                publishPermissions = true;
+            } else {
+                readPermissions = true;
+            }
+
+            // Break if we have a mixed bag, as this is an error
+            if (publishPermissions && readPermissions) {
+                break;
+            }
+        }
+
+        if (declinedPermission != null) {
+            graphContext.error("This request needs declined permission: " + declinedPermission);
+        }
+
+        if (publishPermissions && readPermissions) {
+            graphContext.error("Cannot ask for both read and publish permissions.");
+            return;
+        }
+
+        cordova.setActivityResultCallback(this);
+        LoginManager loginManager = LoginManager.getInstance();
+        // Check for write permissions, the default is read (empty)
+        if (publishPermissions) {
+            // Request new publish permissions
+            loginManager.logInWithPublishPermissions(cordova.getActivity(), permissions);
+        } else {
+            // Request new read permissions
+            loginManager.logInWithReadPermissions(cordova.getActivity(), permissions);
+        }
+    }
+
+    private void sendTo (Map<String, String> paramsMap) {
+        //If you're using the paging URLs they will be URLEncoded, let's decode them.
+        try {
+            graphPath = URLDecoder.decode(graphPath, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+
+        String[] urlParts = graphPath.split("\\?");
+        String graphAction = urlParts[0];
+
+        Bundle params = new Bundle();
+        if (paramsMap.containsKey("message")) {
+            params.putString("message", paramsMap.get("message"));
+        }
+
+        GraphRequest graphRequest = new GraphRequest(
+            AccessToken.getCurrentAccessToken(),
+            "/"+paramsMap.get("id")+"/feed",
+            params,
+            HttpMethod.POST,
+            new GraphRequest.Callback() {
+                public void onCompleted(GraphResponse response) {
+                    if (graphContext != null) {
+                        if (response.getError() != null) {
+                            graphContext.error(getFacebookRequestErrorResponse(response.getError()));
+                        } else {
+                            graphContext.success(response.getJSONObject());
+                        }
+                        graphPath = null;
+                        graphContext = null;
+                    }
+                }
+            }
+        );
+
+        graphRequest.setParameters(params);
+        graphRequest.executeAsync();
+    }
+
 
     private void executeGraph(JSONArray args, CallbackContext callbackContext) throws JSONException {
         graphContext = callbackContext;
