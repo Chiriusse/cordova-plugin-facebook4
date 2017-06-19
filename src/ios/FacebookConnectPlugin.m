@@ -454,6 +454,111 @@
     }];
 }
 
+//Equivalent -> graphApiGroup
+- (void) sendTo:(CDVInvokedUrlCommand *)command
+{
+    CDVPluginResult *pluginResult;
+    if (! [FBSDKAccessToken currentAccessToken]) {
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                          messageAsString:@"You are not logged in."];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    }
+
+    NSDictionary *options = [command.arguments objectAtIndex:0];
+    NSString *message = options[@"message"];
+    NSString *groupId = options[@"id"];
+
+    //NSString *graphPath = [command argumentAtIndex:0];
+    NSArray *permissionsNeeded = [command argumentAtIndex:1];
+    NSSet *currentPermissions = [FBSDKAccessToken currentAccessToken].permissions;
+
+    // We will store here the missing permissions that we will have to request
+    NSMutableArray *requestPermissions = [[NSMutableArray alloc] initWithArray:@[]];
+    NSArray *permissions;
+
+    // Check if all the permissions we need are present in the user's current permissions
+    // If they are not present add them to the permissions to be requested
+    for (NSString *permission in permissionsNeeded){
+        if (![currentPermissions containsObject:permission]) {
+            [requestPermissions addObject:permission];
+        }
+    }
+    permissions = [requestPermissions copy];
+
+    // Defines block that handles the Graph API response
+    FBSDKGraphRequestHandler graphHandler = ^(FBSDKGraphRequestConnection *connection, id result, NSError *error) {
+        CDVPluginResult* pluginResult;
+        if (error) {
+            NSString *message = error.userInfo[FBSDKErrorLocalizedDescriptionKey] ?: @"There was an error making the graph call.";
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                             messageAsString:message];
+        } else {
+            NSDictionary *response = (NSDictionary *) result;
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:response];
+        }
+        NSLog(@"Finished GraphAPI request");
+
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    };
+
+    //Params message
+    NSDictionary *params = @{
+      @"message": message,
+    };
+    //Concat string
+    NSString *path = @'';
+    path = [NSString stringWithFormat:@"%@%@%@", @"/", groupId, @"/feed"];
+    //Post request
+    FBSDKGraphRequest *request = [[FBSDKGraphRequest alloc]
+                      initWithGraphPath:path // @"/"+groupId+"/feed"
+                            parameters:params
+                            HTTPMethod:@"POST"];
+
+    //NSLog(@"Graph Path = %@", graphPath);
+    //Old request
+    //FBSDKGraphRequest *request = [[FBSDKGraphRequest alloc] initWithGraphPath:graphPath parameters:nil];
+
+    // If we have permissions to request
+    if ([permissions count] == 0){
+        [request startWithCompletionHandler:graphHandler];
+        return;
+    }
+
+    [self loginWithPermissions:requestPermissions withHandler:^(FBSDKLoginManagerLoginResult *result, NSError *error) {
+        if (error) {
+            // If the SDK has a message for the user, surface it.
+            NSString *errorMessage = error.userInfo[FBSDKErrorLocalizedDescriptionKey] ?: @"There was a problem logging you in.";
+            CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                              messageAsString:errorMessage];
+            [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+            return;
+        } else if (result.isCancelled) {
+            CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                              messageAsString:@"User cancelled."];
+            [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+            return;
+        }
+
+        NSString *deniedPermission = nil;
+        for (NSString *permission in permissions) {
+            if (![result.grantedPermissions containsObject:permission]) {
+                deniedPermission = permission;
+                break;
+            }
+        }
+
+        if (deniedPermission != nil) {
+            NSString *errorMessage = [NSString stringWithFormat:@"The user didnt allow necessary permission %@", deniedPermission];
+            CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR
+                                                              messageAsString:errorMessage];
+            [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+            return;
+        }
+
+        [request startWithCompletionHandler:graphHandler];
+    }];
+}
+
 - (void) appInvite:(CDVInvokedUrlCommand *) command
 {
     NSDictionary *options = [command.arguments objectAtIndex:0];
@@ -805,10 +910,10 @@ void FBMethodSwizzle(Class c, SEL originalSelector) {
     }
     // Required by FBSDKCoreKit for deep linking/to complete login
     [[FBSDKApplicationDelegate sharedInstance] application:application openURL:url sourceApplication:[options valueForKey:@"UIApplicationOpenURLOptionsSourceApplicationKey"] annotation:0x0];
-    
+
     // Call existing method
     [self swizzled_application:application openURL:url sourceApplication:[options valueForKey:@"UIApplicationOpenURLOptionsSourceApplicationKey"] annotation:0x0];
-    
+
     // NOTE: Cordova will run a JavaScript method here named handleOpenURL. This functionality is deprecated
     // but will cause you to see JavaScript errors if you do not have window.handleOpenURL defined:
     // https://github.com/Wizcorp/phonegap-facebook-plugin/issues/703#issuecomment-63748816
