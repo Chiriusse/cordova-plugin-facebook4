@@ -506,7 +506,7 @@
       @"message": message,
     };
     //Concat string
-    NSString *path = @'';
+    NSString *path = @"init";
     path = [NSString stringWithFormat:@"%@%@%@", @"/", groupId, @"/feed"];
     //Post request
     FBSDKGraphRequest *request = [[FBSDKGraphRequest alloc]
